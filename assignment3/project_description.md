@@ -160,7 +160,8 @@ sudo apt install python3-pip
 **Step 1. Set up the images.**
 
 ```bash
-cd starter_code
+# From your shared course repository:
+cd assignment3/starter_code
 bash evaluation_scripts/prepare_images.sh
 ```
 
