@@ -1,5 +1,10 @@
 # CS2680 Assignment 3: Harness Competition
 
+> ### ⚠️ THE LEADERBOARD DOES NOT ACCEPT LATE DAYS AND WILL CLOSE ON TUESDAY, OCTOBER 20, AT 11:59 P.M.
+>
+> If you have not submitted to the leaderboard by the time it closes, you get 0 points for the
+> leaderboard. Late days apply only to the repo and the video.
+
 
 ## Part 0. The framework
 
@@ -276,31 +281,44 @@ cd starter_code
 zip -r src.zip src
 ```
 
-#### Write-up
+Also archive your Claude Code session files as described in
+[What to submit with each assignment](https://cs2680.com/computing/claude-code.html#export) and
+commit them to `assignment3/` in your repository. Check that your `.gitignore` does not exclude the
+archive. As on every assignment, the session files carry no points of their own. They are the record
+behind the claims in your write-up.
 
-A one-page PDF document (one page is a hard limit) with two sections:
+#### Write-up and video
 
-1. **The main components and optimizations of your harness.** Describe the main components, e.g.
-   subagents, memory carried from one task to the next, the policy for continuing a failing task or
-   giving up on it, how many tasks you keep open at once, and which model tier does what.
-2. **Pitfalls, and what helped.** The pitfalls you ran into, and what you think helped improve
-   accuracy (tasks solved), cost per solved task, or time per solved task.
+Write down the lessons you learned from this assignment in a one-page PDF (one page is a hard
+limit), and present them in a **3-minute** video. Some examples:
 
-The document must be entirely your own work, with no AI-generated text. Submit the PDF on Canvas.
+- what you learned from using AI to build your harness;
+- a harness optimization you found useful, e.g. subagents, memory carried from one task to the next, the policy for
+  continuing a failing task or giving up on it, or which model
+  tier does what;
+- a pitfall you ran into, and how you got past it;
+- anything else you found worth noting.
 
-#### Video
+The write-up must be entirely your own work, with no AI-generated text. Commit it to your repository
+as `assignment3/writeup.pdf`. Your repository's `assignment3/` should then contain:
 
-Record a **3-minute** video with your face visible, in your own voice. Open your code, move the
-cursor through it, and navigate your harness to show where each component from the write-up lives,
-along with the pitfalls and the helpful techniques. Submit the video on Canvas.
+```
+assignment3/
+├── a3-sessions.tar.gz    your Claude Code session files
+└── writeup.pdf           the write-up
+```
+
+In the video, present the same lessons with your face visible and in your own voice. When a lesson
+is about your harness, open the code and move the cursor to the relevant part. Upload the video
+to Canvas.
 
 ### Grading
 
 | Part | Points | What is graded |
 |---|---|---|
 | Leaderboard | **80** | The rank of your best submission on the leaderboard (Part 2, Step 6), scored as below. |
-| Write-up | **10** | The components and optimizations of your harness, and the pitfalls and helpful techniques you found. |
-| Video | **10** | A walk-through that navigates the harness code; a clear account of the pitfalls and helpful techniques you found. |
+| Write-up | **10** | The lessons you learned from the assignment, clearly explained in one page. |
+| Video | **10** | A clear 3-minute presentation of the same lessons, showing the code where a lesson concerns your harness. |
 
 **Leaderboard score.** If *r* is the rank of your best submission:
 
