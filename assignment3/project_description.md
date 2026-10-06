@@ -18,7 +18,7 @@ needs. It provides an environment where codes are provideds and modified. Some G
 cache, and `GOPROXY=off` is set, so `go get <module>@<version>` and `go mod tidy` work offline.
 Look at what is available with `ls $(go env GOMODCACHE)/cache/download/<module>/@v/`. `evaluation_scripts/prepare_images.sh` build the images so that tasks can be solved offline.
 
-There is a facility dispatcher that your agent will interact with, to start a task, generate a patch and evaluate it. Both the agent container and task containers has no internet: it sits on private Docker networks only, and its single way out is an HTTPS proxy that accepts connections to the course API.
+There is a facility dispatcher that your agent will interact with, to start a task, generate a patch and evaluate it. Neither container can reach the internet: the agent container's only way out is an HTTPS proxy to the course API, and task containers have none.
 
 ### How your agent reaches a task
 
@@ -108,8 +108,10 @@ starter_code/
 │   ├── config.py                 your harness settings (the course API settings are environment variables, see Step 2)
 │   ├── sandbox.py                Sandbox(url, workdir): exec / read_text / write_text over HTTP
 │   └── sandbox_server.py         the HTTP server inside every task container (run_all.py needs its GET /health)
-├── dispatcher/                   course infrastructure: the client your Agent calls, the egress proxy, and
-│                                 agent.Dockerfile, the agent container image (python + openai, built offline)
+├── dispatcher/                   course infrastructure
+│   ├── dispatcher.py             Dispatcher, the client your Agent calls: next_task, extract_patch / submit_patch, evaluate, continue_task, done, logger
+│   ├── egress_proxy.py           the HTTPS proxy: the agent container's only way out, to the course API
+│   └── agent.Dockerfile          the agent container image (python + openai, built offline)
 ├── madsOpt.py                    course infrastructure: builds the client and calls Agent(...).run()
 └── evaluation_scripts/
     ├── prepare_images.sh         one-time setup (needs internet)
@@ -154,7 +156,7 @@ and builds the pre-warmed image of each Go task that requires additional package
 ```bash
 export CS2680_API_KEY=...
 export CS2680_MODEL_EXPERT=expert        # Expert tier
-export CS2680_MODEL_STANDARD=standard    # Standard tier (the starter Agent's model)
+export CS2680_MODEL_STANDARD=standard    # Standard tier
 export CS2680_MODEL_STARTER=starter      # Starter tier
 python3 evaluation_scripts/run_all.py --limit 0
 ```
@@ -186,7 +188,7 @@ The leaderboard grades your `src/` with the same `dispatcher/`, `madsOpt.py` and
 `evaluation_scripts/` as the starter code, on the evaluation task set. Only your `src/` is taken
 from what you upload. Find the leaderboard at: https://leaderboard.cs2680.com/
 
-**Step 1. Register.** Create an account with your Harvard email address and your full name exactly as the ones on Canvas.
+**Step 1. Log in and change your password.** On the leaderboard page, log in using the Harvard email address associated with your Canvas account. Your initial password is Cs2680-<your 8-digit student ID>. These are the same initial login credentials as those for your API account. After logging in, click your name and select `Change Password` from the drop-down menu.
 
 **Step 2. The leaderboard.** After you log in, the `Leaderboard` page shows the top 10 students, each
 by their best submission, and, below them, your own best submission with its rank. The leaderboard
@@ -204,20 +206,20 @@ grade: the run takes the first *k* tasks of the evaluation set, or all of them i
 
 **Step 5. Past submissions, cancelling, and your daily budget.** Your ongoing and past submissions
 are on the Past submissions page. You can have at most one submission queued or being graded at
-a time, and that one has a **Cancel** button. Every student has **$5 per day** for leaderboard
-grading.
+a time, and that one has a **Cancel** button. Every student has **$30 per day** for leaderboard
+grading with a **$10 limit** per submission. If either limit is reached, grading will stop, and the progress completed up to that point will be recorded as the submission’s result.
 
 - Cancelling a submission that is still **queued** removes it from the queue; it costs nothing.
 - Cancelling a submission that is **being graded** stops the run: the cost so far is deducted
-  from your $5 for the day, and the submission is recorded with its three metrics up to the
+  from your $30 for the day, and the submission is recorded with its three metrics up to the
   moment you cancelled.
 
 **Step 6. Ranking: a skyline.** Each student is ranked by their best submission.
 
-- Best submissions that solved **at least 6 tasks** are ranked in skyline layers over the three
+- Best submissions that solved **at least 7 tasks** are ranked in skyline layers over the three
   metrics. One submission dominates another if it is at least as good on all three and better on at least one of them. Rank 1 is every submission that no other dominates;
   rank 2 is the same among the rest, and so on.
-- Best submissions that solved fewer than 6 tasks come below all of them, ranked by tasks solved
+- Best submissions that solved fewer than 7 tasks come below all of them, ranked by tasks solved
   alone.
 - Equal ranks are ties, and the next rank counts everyone ahead: 1, 1, 1, 4, ...
 - A new submission becomes your best only if it ranks strictly better than your current best. A
@@ -241,5 +243,59 @@ grading.
   - *new tests failed*: a test your fix should make pass still fails (a task can show both of
     the last two).
 - **The dollar cost is checked during grading.** Every 2 minutes the grader adds up what the run has
-  spent so far; a grading that reaches what is left of your budget for the day is stopped and saved
-  as canceled, with what it had done by then (so it can go slightly over).
+  spent so far; a grading that reaches what is left of your budget for the day is stopped and saved as `Reached the budget`, with what it had done by then.
+
+
+## Part 3. Submission and grading
+
+### Submission
+
+The submission has three parts: the **code** (your `src/` on the leaderboard), a **write-up**,
+and a **video**.
+
+#### Code
+
+Zip your `src/` folder and upload `src.zip` on the leaderboard's Submit page (Part 2, Step 3):
+
+```bash
+cd starter_code
+zip -r src.zip src
+```
+
+#### Write-up
+
+A one-page (hard limit) document in PDF with two sections:
+
+1. **The main components and optimizations of your harness.** What the main components are: e.g. subagents, memory carried from one task to the next, the policy for
+   continuing a failing task or giving up on it, how many tasks you keep open at once, which
+   model tier does what.
+2. **Pitfalls, and what helped.** The pitfalls you ran into, and the things you think helped
+   improve accuracy (tasks solved), cost per solved task, or time per solved task.
+
+The document must be entirely your own work. No AI-generated text. Submit the PDF on Canvas.
+
+#### Video
+
+Record a **3-minute** video with your face visible and in your own voice. Open your code and
+move the cursor through it, and navigate your harness: show where each component
+from the write-up lives, along with the pitfalls and the helpful techniques. Submit the video on Canvas.
+
+### Grading
+
+| Part | Points | What is graded |
+|---|---|---|
+| Leaderboard | **80** | The rank of your best submission on the leaderboard (Part 2, Step 6), scored as below. |
+| Write-up | **10** | The components and optimizations of your harness, and the pitfalls and helpful techniques you found. |
+| Video | **10** | A walk-through that navigates the harness code; a clear account of the pitfalls and helpful techniques you found. |
+
+**Leaderboard score.** With *r* the rank of your best submission:
+
+```
+score = max(81 − r, 50)    if any of your submissions achieves the baseline
+score = 81 − r             otherwise
+```
+
+The **baseline** solves 14 tasks in 4 hours for a limit of $10. If any of your submissions achieves the baseline, you will be credited with doing so, regardless of whether it is your best submission.
+
+For example, rank 1 scores 80, rank 12 scores 69 whether or not it beats the baseline, rank 40
+scores 50 if it beats the baseline and 41 if it does not.
