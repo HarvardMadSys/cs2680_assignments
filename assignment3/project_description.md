@@ -109,13 +109,18 @@ counts from that trace.
 ## Part 1. Starter code
 
 ### What is in it
+The starter code is in the [course assignments repository](https://github.com/HarvardMadSys/cs2680_assignments),
+under `assignment3/starter_code`.
+
+Copy it into `assignment3/starter_code/` in your shared private course repository. Commit your changes regularly as you work on this assignment. the paths below are relative to that folder.
+
 You can modify anything under `src/` and add features there. The rest (`dispatcher/`, `madsOpt.py`
 and `evaluation_scripts/`) is the same as what the leaderboard uses.
 The one exception is `dispatcher/student_name.json`, where you fill in your name (Step 2); on the
 leaderboard, the grader's own session id is used instead.
 
 ```
-starter_code/
+assignment3/starter_code/
 ├── src/                          YOURS: everything here may change (the leaderboard takes only src/)
 │   ├── agentic_loop.py           class Agent (your entry point): a starter showing every dispatcher, sandbox, model and trace call
 │   ├── config.py                 your harness settings (the course API settings are environment variables, see Step 2)
@@ -288,10 +293,10 @@ and a **video**.
 
 #### Code
 
-Zip your `src/` folder and upload `src.zip` on the leaderboard's Submit page (Part 2, Step 3):
+Zip `assignment3/starter_code/src/` and upload `src.zip` on the leaderboard's Submit page (Part 2, Step 3):
 
 ```bash
-cd starter_code
+# Run from assignment3/starter_code/:
 zip -r src.zip src
 ```
 
@@ -301,30 +306,33 @@ commit them to `assignment3/` in your repository. Check that your `.gitignore` d
 archive. As on every assignment, the session files carry no points of their own. They are the record
 behind the claims in your write-up.
 
-#### Write-up and video
+#### Write-up
 
-Write down the lessons you learned from this assignment in a one-page PDF (one page is a hard
-limit), and present them in a **3-minute** video. Some examples:
+A PDF document that answers these questions:
 
-- what you learned from using AI to build your harness;
-- a harness optimization you found useful, e.g. subagents, memory carried from one task to the next, the policy for
-  continuing a failing task or giving up on it, or which model
-  tier does what;
-- a pitfall you ran into, and how you got past it;
-- anything else you found worth noting.
+1. **What are the main components of your harness?** For example, subagents, memory carried from
+   one task to the next, or which model tier does what.
+2. **What optimizations and trade-offs did you make?** For example, the policy for continuing a
+   failing task or giving up on it, or how many tasks you keep open at once.
+3. **What pitfalls did you run into, and what helped?** Describe the pitfalls, and what you think
+   helped improve accuracy (tasks solved), cost per solved task, or time per solved task.
 
 The write-up must be entirely your own work, with no AI-generated text. Commit it to your repository
 as `assignment3/writeup.pdf`. Your repository's `assignment3/` should then contain:
 
 ```
 assignment3/
+├── starter_code/         your agent code and local run outputs
 ├── a3-sessions.tar.gz    your Claude Code session files
 └── writeup.pdf           the write-up
 ```
 
-In the video, present the same lessons with your face visible and in your own voice. When a lesson
-is about your harness, open the code and move the cursor to the relevant part. Upload the video
-to Canvas.
+#### Video
+
+In the video, present the same lessons with your face visible and in your own voice. Open your code and
+move the cursor through it, and navigate your harness: show where each component
+from the write-up lives, along with the pitfalls and the helpful techniques. Submit the video on Canvas.
+
 
 ### Grading
 
