@@ -19,6 +19,7 @@ Run it from anywhere:
   python3 package_claude_sessions.py --path ~/other/checkout
   python3 package_claude_sessions.py --no-repo-root
   python3 package_claude_sessions.py --dry-run
+  python3 package_claude_sessions.py --path . --output claude-sessions.tar.gz
 """
 
 from __future__ import annotations
@@ -34,7 +35,10 @@ import tempfile
 from pathlib import Path
 
 
-ASSIGNMENT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+ASSIGNMENT_DIR = (
+    SCRIPT_DIR.parent if SCRIPT_DIR.name == "starter_code" else SCRIPT_DIR / "assignment3"
+)
 ARCHIVE_NAME = "a3-sessions.tar.gz"
 # Same shapes the course page asks you to scan for before archiving.
 SECRET_RE = re.compile(
@@ -368,7 +372,7 @@ def main(argv: list[str]) -> int:
     write_archive(project_dirs, output)
     print(f"Wrote {output}")
     warn_if_ignored(output)
-    print(f"Commit {ARCHIVE_NAME} under assignment3/. Do not gitignore it.")
+    print(f"Commit {output}. Do not gitignore it.")
     return 0
 
 
@@ -383,7 +387,7 @@ def warn_if_ignored(path: Path) -> None:
         return
     if result.returncode == 0:
         print(
-            f"Warning: git ignores {path.name}. The assignment asks you to commit this archive.",
+            f"Warning: git ignores {path.name}. Include this archive in your commit.",
             file=sys.stderr,
         )
 

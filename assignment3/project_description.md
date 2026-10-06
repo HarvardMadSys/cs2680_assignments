@@ -108,11 +108,39 @@ counts from that trace.
 
 ## Part 1. Starter code
 
-### What is in it
-The starter code is in the [course assignments repository](https://github.com/HarvardMadSys/cs2680_assignments),
-under `assignment3/starter_code`.
+### Initialize your repository first
 
-Copy it into `assignment3/starter_code/` in your shared private course repository. Commit your changes regularly as you work on this assignment. the paths below are relative to that folder.
+The starter code is in the [course assignments repository](https://github.com/HarvardMadSys/cs2680_assignments),
+under `assignment3/starter_code/`. Copy that entire folder into the same path in your shared private
+course repository, including `init.sh` and `package_claude_sessions.py`.
+
+**Before starting work with Claude Code, run `init.sh`:**
+
+```bash
+# From your shared course repository:
+bash assignment3/starter_code/init.sh
+```
+
+This copies `package_claude_sessions.py` to the repository root and creates `CLAUDE.local.md`
+there with a workflow for all work in the repository. Claude Code commits your changes together with the repository's session logs in `claude-sessions.tar.gz` at the repository root.
+
+### What is in it
+
+After initialization, both helper files live at the repository root:
+
+```
+course-repository/
+├── CLAUDE.local.md               repository workflow instructions for Claude Code
+├── package_claude_sessions.py    session packager copied by init.sh
+└── assignment3/
+    └── starter_code/            starter files listed below
+```
+
+The shared workflow runs `python3 package_claude_sessions.py --path . --output claude-sessions.tar.gz`
+from the repository root to include sessions from every assignment and other repository work.
+For the Assignment 3 submission, run `python3 package_claude_sessions.py` from the repository
+root to create `assignment3/a3-sessions.tar.gz`. The remaining instructions use paths relative
+to `assignment3/starter_code/`.
 
 You can modify anything under `src/` and add features there. The rest (`dispatcher/`, `madsOpt.py`
 and `evaluation_scripts/`) is the same as what the leaderboard uses.
@@ -121,6 +149,8 @@ leaderboard, the grader's own session id is used instead.
 
 ```
 assignment3/starter_code/
+├── init.sh                      run first: copies the session packager and creates CLAUDE.local.md at the repository root
+├── package_claude_sessions.py    packager source, copied to the repository root by init.sh
 ├── src/                          YOURS: everything here may change (the leaderboard takes only src/)
 │   ├── agentic_loop.py           class Agent (your entry point): a starter showing every dispatcher, sandbox, model and trace call
 │   ├── config.py                 your harness settings (the course API settings are environment variables, see Step 2)
