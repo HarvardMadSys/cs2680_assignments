@@ -171,9 +171,9 @@ ends with `== all images present`.
 
 ```bash
 export CS2680_API_KEY=...
-export CS2680_MODEL_EXPERT=expert        # Expert tier
-export CS2680_MODEL_STANDARD=standard    # Standard tier
-export CS2680_MODEL_STARTER=starter      # Starter tier
+export CS2680_MODEL_EXPERT=expert        # Expert: most capable model; per 1M tokens: $2.00 input, $0.10 cached input, $10.00 output
+export CS2680_MODEL_STANDARD=standard    # Standard: per 1M tokens: $0.08 input, $0.004 cached input, $0.28 output
+export CS2680_MODEL_STARTER=starter      # Starter: cheapest model; per 1M tokens: $0.01 input, $0.0005 cached input, $0.04 output
 python3 evaluation_scripts/run_all.py --limit 0
 ```
 
