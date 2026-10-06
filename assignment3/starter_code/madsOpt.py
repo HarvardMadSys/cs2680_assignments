@@ -46,9 +46,11 @@ File handshake with evaluation_scripts/run_all.py, all under .tasks/seq/:
     host  -> agent resp_<n>.json  {"n", "ok", ...payload | "error"}
     host  -> agent ready | shutdown ;  agent -> host  end   (agent finished)
 Patch folders: .tasks/patches/<k>/patch.diff (visible to both sides).
-Course API: madsOpt.py sets CS2680_BASE_URL (unless already set); CS2680_API_KEY and the model
-ids CS2680_MODEL_EXPERT / _STANDARD / _STARTER come from the host (run_all.py passes every
-CS2680_* variable into the agent container). Your Agent reads them with os.environ.
+Course API: run_all.py sets CS2680_BASE_URL to the egress proxy (http://a3proxy_<run>:3128/v1,
+the agent container's only way to the API: https://api.cs2680.com itself is unreachable from
+inside it); CS2680_API_KEY and the model ids CS2680_MODEL_EXPERT / _STANDARD / _STARTER come from
+the host (run_all.py passes every CS2680_* variable into the agent container). Your Agent reads
+them with os.environ — never a hard-coded URL.
 Requires Python 3.10+, the `openai` package, and the stdlib.
 """
 
@@ -63,14 +65,13 @@ sys.path.insert(0, HERE)
 from dispatcher import Dispatcher, DispatcherShutdown, SEQ_DIR, _log  # noqa: E402  (dispatcher client)
 from src.agentic_loop import Agent                                # noqa: E402  (student code)
 
-CS2680_BASE_URL = "https://api.cs2680.com/v1"   # the course API (OpenAI-compatible)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="CS2680 A3 harness driver (dispatcher)")
     parser.add_argument("--log", action="store_true", help="write per-task JSONL traces to ./madsOpt_logs/<k>/")
     args = parser.parse_args()
-    os.environ.setdefault("CS2680_BASE_URL", CS2680_BASE_URL)
+    if not os.environ.get("CS2680_BASE_URL"):
+        sys.exit("CS2680_BASE_URL is not set: run the agent with evaluation_scripts/run_all.py")
     dispatcher = Dispatcher(log_enabled=args.log)
     rc = 0
     try:

@@ -4,13 +4,20 @@
     export CS2680_API_KEY=...         # and the model ids (project_description.md, Part 1 Step 2)
     python3 evaluation_scripts/run_all.py [--limit N]
 
-  CS2680_*        every CS2680_* variable is passed into the agent container as is
+  CS2680_*        every CS2680_* variable is passed into the agent container as is, except
+                  CS2680_BASE_URL: the agent gets http://a3proxy_<run>:3128/v1 (the egress proxy)
+  A3_API_UPSTREAM the course API the egress proxy forwards to, default https://api.cs2680.com
+
+  Session id: every course API request of a run carries <First>_<Last>_<UTC start time> (the egress
+  proxy adds it; dispatcher/session.py), with your name from dispatcher/student_name.json: fill it
+  in, or run this once in a terminal and answer. The id is printed and kept in run_logs/session_id.
+  A3_SESSION_ID   the grader's id for a grading (sub_<n>_<UTC>[_c<k>]), used instead of the name
 
   --limit N       only the first N tasks can be opened (0 = preflight: start the agent, start
                   and health-check every task's sandbox, check egress, stop)
   A3_MAX_LIVE     tasks (sandboxes) live at once, default 5
   A3_MAX_GRADING  verifier containers running at once, default 3
-  A3_EVAL_TIMEOUT seconds per grading, default 600 (a hung test suite = all its tests failing)
+  A3_EVAL_TIMEOUT seconds per grading, default 2100 (a hung test suite = all its tests failing)
   A3_RUN_LIMIT_S  seconds for the whole run, counted from the moment the first task is opened,
                   default 14400 (4 h); 0 = no limit (see "time limit" below)
   A3_DOCKER       docker command; default: `docker` if it works, else `sudo -n -E docker` (asks
@@ -48,10 +55,11 @@ container can reach; the repo-root copies (model_patch_<k>.diff, pro_eval/eval_r
 run_all_results.md) are written after the agent container is gone. Never handed to the agent:
 instance_id, repo, base_commit, docker_image, sandbox_image.
 
-Infrastructure (unchanged from the bash runner): egress proxy a3proxy_<run> (the only container
-with internet, CONNECT allowlist), agent container a3agent_<run> on two --internal networks with
-HTTPS_PROXY, sandbox a3sbx_<run>_<k> per live task on the private network only, running
-src/sandbox_server.py with a bind-mounted portable CPython.
+Infrastructure: egress proxy a3proxy_<run> (the only container with internet; a reverse proxy that
+forwards /v1/... to A3_API_UPSTREAM itself, no tunnels), agent container a3agent_<run> on two
+--internal networks with CS2680_BASE_URL=http://a3proxy_<run>:3128/v1 (its only way to the API),
+sandbox a3sbx_<run>_<k> per live task on the private network only, running src/sandbox_server.py
+with a bind-mounted portable CPython. Gradings (evaluate_one.sh) run with no network.
 
 Boundary with the agent container: it mounts this folder READ-ONLY at /madsOpt; only .tasks/ and
 madsOpt_logs/ are writable mounts. The host never runs a file from that folder during or after the
@@ -72,6 +80,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -90,14 +99,15 @@ PORTABLE_PY_MUSL = os.environ.get("A3_PORTABLE_PY_MUSL", f"{ASSETS}/portable_pyt
 AGENT_IMAGE = os.environ.get("A3_AGENT_IMAGE", "cs2680-a3-agent")
 SBX_CPUS = os.environ.get("A3_SBX_CPUS", "1"); SBX_MEM = os.environ.get("A3_SBX_MEM", "4g")
 SBX_PORT = 8000; PROXY_PORT = 3128
-EGRESS_ALLOW = os.environ.get("A3_EGRESS_ALLOW", "api.cs2680.com:443").split(",")
+API_UPSTREAM = os.environ.get("A3_API_UPSTREAM", "https://api.cs2680.com")
 MAX_LIVE = int(os.environ.get("A3_MAX_LIVE", "5"))
 MAX_GRADING = int(os.environ.get("A3_MAX_GRADING", "3"))
-EVAL_TIMEOUT = int(os.environ.get("A3_EVAL_TIMEOUT", "600"))
+EVAL_TIMEOUT = int(os.environ.get("A3_EVAL_TIMEOUT", "2100"))
 RUN_LIMIT_S = int(os.environ.get("A3_RUN_LIMIT_S", str(4 * 3600)))   # whole run, from the first task opened
 
 RUN = f"{int(time.time())}_{os.getpid()}"
 NET, EGRESS, AGENT, PROXY = f"a3sbx_{RUN}", f"a3egress_{RUN}", f"a3agent_{RUN}", f"a3proxy_{RUN}"
+API_BASE_URL = f"http://{PROXY}:{PROXY_PORT}/v1"   # the agent's CS2680_BASE_URL
 HOSTLOG = os.path.join(os.environ.get("A3_HOSTLOG", os.path.join(CACHE, "hostlogs")), f"{os.path.basename(ROOT)}_{RUN}")
 SCRIPTS = f"{HOSTLOG}/evaluation_scripts"   # host-only copies of the course scripts the host runs (snapshot_scripts)
 
@@ -115,6 +125,7 @@ def log(msg: str):
 
 
 DOCKER = ["docker"]   # set by resolve_docker(); every sh("docker", ...) goes through it
+SESSION = None        # set by main(): this run's session id (dispatcher/session.py)
 
 
 def resolve_docker():
@@ -386,11 +397,11 @@ def ensure_images(tasks):
 def start_infra():
     sh("docker", "network", "create", "--internal", NET)
     sh("docker", "network", "create", "--internal", EGRESS)
-    log(f"agent {AGENT} ({AGENT_IMAGE}); networks {NET}, {EGRESS}; egress allow: {','.join(EGRESS_ALLOW)}; "
+    log(f"agent {AGENT} ({AGENT_IMAGE}); networks {NET}, {EGRESS}; API {API_BASE_URL} -> {API_UPSTREAM}; "
         f"max live {MAX_LIVE}, max grading {MAX_GRADING}, eval timeout {EVAL_TIMEOUT}s")
-    allow = [x for a in EGRESS_ALLOW for x in ("--allow", a)]
     sh("docker", "run", "-d", "--name", PROXY, "--network", "bridge", "-v", f"{ROOT}/dispatcher:/dispatcher:ro",
-       AGENT_IMAGE, "python3", "-B", "/dispatcher/egress_proxy.py", "--port", str(PROXY_PORT), *allow)
+       AGENT_IMAGE, "python3", "-B", "/dispatcher/egress_proxy.py", "--port", str(PROXY_PORT), "--upstream", API_UPSTREAM,
+       "--session", SESSION)
     sh("docker", "network", "connect", EGRESS, PROXY)
     host_id = f"{os.getuid()}:{os.getgid()}"
     script = (
@@ -399,12 +410,18 @@ def start_infra():
         'cd /madsOpt/.tasks/trace\n'
         'python3 /madsOpt/madsOpt.py --log\n'
         'mkdir -p /madsOpt/madsOpt_logs && cp -r madsOpt_logs/. /madsOpt/madsOpt_logs/ 2>/dev/null || true\n')
-    env = [*[x for v in sorted(os.environ) if v.startswith("CS2680_") for x in ("-e", v)],   # key + model ids
+    env = [*[x for v in sorted(os.environ) if v.startswith("CS2680_") and v != "CS2680_BASE_URL"
+             for x in ("-e", v)],                                                            # key + model ids
            "-e", "MADSOPT_MAX_ITERATIONS",
-           "-e", f"HTTPS_PROXY=http://{PROXY}:{PROXY_PORT}", "-e", f"https_proxy=http://{PROXY}:{PROXY_PORT}",
+           "-e", f"CS2680_BASE_URL={API_BASE_URL}",     # the egress proxy: the agent's only way to the API
            "-e", f"HOST_ID={host_id}", "-e", "PYTHONDONTWRITEBYTECODE=1"]
+    hidden = f"{HOSTLOG}/hidden.json"     # the task lists (instance ids, hidden test names) read as {} in the agent
+    with open(hidden, "w") as f:
+        f.write("{}\n")
     mounts = ["-v", f"{ROOT}:/madsOpt:ro",                      # read-only: the agent cannot touch the course files
-              "-v", f"{ROOT}/.tasks:/madsOpt/.tasks", "-v", f"{ROOT}/madsOpt_logs:/madsOpt/madsOpt_logs"]
+              "-v", f"{ROOT}/.tasks:/madsOpt/.tasks", "-v", f"{ROOT}/madsOpt_logs:/madsOpt/madsOpt_logs",
+              *[x for f in ("agent_task_input.json", "task_test.json")
+                for x in ("-v", f"{hidden}:/madsOpt/evaluation_scripts/{f}:ro")]]
     sh("docker", "run", "-d", "--name", AGENT, "--network", EGRESS, *mounts, *env, AGENT_IMAGE, "bash", "-c", script)
     sh("docker", "network", "connect", NET, AGENT)
     while not exists_at(SEQ_FD, "ready"):
@@ -673,26 +690,32 @@ class Server:
 
 def preflight(tasks) -> int:
     bad = 0
-    host = EGRESS_ALLOW[0].rsplit(":", 1)[0]
+    host = urllib.parse.urlsplit(API_UPSTREAM).hostname
     probe = f'''
-import socket, sys, urllib.request, urllib.error
-proxy = "{PROXY}:{PROXY_PORT}"; host = "{host}"; ok = True
-def via_proxy(url):
-    op = urllib.request.build_opener(urllib.request.ProxyHandler({{'https': 'http://' + proxy}}))
-    try: return op.open(url, timeout=20).status
-    except urllib.error.HTTPError as e: return e.code
-try: print(f'egress: https://{{host}}/ via proxy -> HTTP {{via_proxy(f"https://{{host}}/")}} (reachable)')
-except Exception as e: print(f'egress: https://{{host}}/ via proxy FAILED: {{e}}'); ok = False
+import os, socket
+base = os.environ.get("CS2680_BASE_URL", ""); proxy = ("{PROXY}", {PROXY_PORT}); host = "{host}"; ok = True
+def status(req):   # the status code the proxy answers a raw request with
+    s = socket.create_connection(proxy, timeout=20)
+    try:
+        s.sendall(req.encode()); line = s.recv(4096).split(b"\\r\\n", 1)[0].split()
+        return int(line[1]) if len(line) > 1 and line[1].isdigit() else None
+    finally: s.close()
 try:
     import openai
-    try: openai.OpenAI(base_url=f'https://{{host}}/v1', api_key='preflight').models.list(); print('egress: OpenAI SDK via HTTPS_PROXY -> 200 (reachable)')
-    except openai.APIStatusError as e: print(f'egress: OpenAI SDK via HTTPS_PROXY -> HTTP {{e.status_code}} (reachable)')
-    except openai.APIConnectionError as e: print(f'egress: OpenAI SDK via HTTPS_PROXY FAILED: {{e}}'); ok = False
+    try: openai.OpenAI(base_url=base, api_key='preflight', max_retries=0).models.list(); print(f'egress: OpenAI SDK via {{base}} -> 200 (reachable)')
+    except openai.APIStatusError as e: print(f'egress: OpenAI SDK via {{base}} -> HTTP {{e.status_code}} (reachable)')
+    except openai.APIConnectionError as e: print(f'egress: OpenAI SDK via {{base}} FAILED: {{e}}'); ok = False
 except ImportError: print('egress: openai not importable'); ok = False
-try: c = via_proxy('https://github.com/'); print(f'egress: https://github.com/ via proxy -> HTTP {{c}}', 'blocked' if c == 403 else 'NOT BLOCKED'); ok &= c == 403
-except Exception as e: print(f'egress: https://github.com/ via proxy -> {{type(e).__name__}} (blocked)')
-try: socket.create_connection(('1.1.1.1', 443), timeout=5); print('egress: direct 1.1.1.1:443 CONNECTED - agent is NOT isolated'); ok = False
-except OSError as e: print(f'egress: direct 1.1.1.1:443 -> {{type(e).__name__}} (no route, good)')
+for what, req, want in (("CONNECT github.com:443", "CONNECT github.com:443 HTTP/1.1\\r\\nHost: github.com:443\\r\\n\\r\\n", 405),
+                        ("CONNECT {host}:443", "CONNECT {host}:443 HTTP/1.1\\r\\nHost: {host}:443\\r\\n\\r\\n", 405),
+                        ("GET http://github.com/", "GET http://github.com/ HTTP/1.1\\r\\nHost: github.com\\r\\n\\r\\n", 403),
+                        ("GET /admin", "GET /admin HTTP/1.1\\r\\nHost: {PROXY}\\r\\n\\r\\n", 403)):
+    try: c = status(req)
+    except OSError as e: c = type(e).__name__
+    print(f'egress: {{what}} via proxy -> {{c}}', '(refused, good)' if c == want else 'NOT REFUSED'); ok &= c == want
+for addr in ((host, 443), ('1.1.1.1', 443)):
+    try: socket.create_connection(addr, timeout=5); print(f'egress: direct {{addr[0]}}:443 CONNECTED - agent is NOT isolated'); ok = False
+    except OSError as e: print(f'egress: direct {{addr[0]}}:443 -> {{type(e).__name__}} (no route, good)')
 print('EGRESS OK' if ok else 'EGRESS CHECK FAILED')
 '''
     r = sh("docker", "exec", "-i", AGENT, "python3", "-", input=probe, check=False)
@@ -742,12 +765,26 @@ def _stop_signal(signum, frame):
     raise KeyboardInterrupt   # SIGTERM / SIGHUP: handled exactly like Ctrl-C (see main)
 
 
+def session_id() -> str:
+    """dispatcher/session.py's id for this run, run from its source before anything is started (the
+    agent container, which could only read that folder anyway, does not exist yet; no __pycache__)."""
+    path = os.path.join(ROOT, "dispatcher", "session.py")
+    ns = {"__name__": "a3_session", "__file__": path}
+    exec(compile(open(path).read(), path, "exec"), ns)
+    return ns["session_id"]()
+
+
 def main() -> int:
+    global SESSION
     args = parse_args()
+    SESSION = session_id()                         # first: without a name, nothing is started
     preconditions()
     shutil.rmtree(".tasks", ignore_errors=True); shutil.rmtree("run_logs", ignore_errors=True)
     for d in (SEQ, ".tasks/trace", PATCHES, "run_logs", "madsOpt_logs"):
         os.makedirs(d, exist_ok=True)              # host-owned before the (root) agent container starts
+    with open("run_logs/session_id", "w") as f:
+        f.write(SESSION + "\n")
+    log(f"session {SESSION} (sent with every course API request of this run)")
     resolve_docker()                               # after run_logs/ exists: its sudo fallback logs there
     os.makedirs(HOSTLOG, exist_ok=True)
     snapshot_scripts()

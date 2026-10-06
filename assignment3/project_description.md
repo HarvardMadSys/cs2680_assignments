@@ -26,8 +26,8 @@ set, so `go get <module>@<version>` and `go mod tidy` work offline. To see what 
 the images so that tasks can be solved offline.
 
 Your agent interacts with a facility dispatcher to start a task, generate a patch and evaluate it.
-Neither container can reach the internet: the agent container's only way out is an HTTPS proxy to the
-course API, and task containers have none.
+Neither container can reach the internet: the agent container's only way out is an egress proxy to
+the course API, which `CS2680_BASE_URL` points to, and task containers have none.
 
 ### How your agent reaches a task
 
@@ -61,7 +61,7 @@ dispatcher.extract_patch(k)        # `git diff` of the task container -> the tas
 ev = dispatcher.evaluate(k)        # -> {"tests_failed": F, "tests_total": T, "attempt": a}
 ```
 
-The facility copies the patch onto a fresh copy of the task image, applies the task's hidden tests, runs them, and sends the agent the total number of tests
+The facility copies the patch onto a fresh copy of the task image (with the same pre-warmed Go module cache, and no network), applies the task's hidden tests, runs them, and sends the agent the total number of tests
 and how many failed. Your agent then chooses between:
 
 ```python
@@ -80,7 +80,7 @@ dispatcher.done(k, reason, iterations)
   returns `None` when no tasks are left.
 - **One attempt at a time per task.** `continue_task(k)`, `evaluate(k)` and `done(k)` are refused
   while a grading of k is still running.
-- **Grading has a time limit.** A test suite that hangs counts as all of its tests failing.
+- **Grading has a time limit: 35 minutes.** A test suite that hangs counts as all of its tests failing.
 - **The whole run has a time limit: 4 hours.** The clock starts when your agent opens its first
   task. When 4 hours have passed, the run stops: your agent's next call to the dispatcher raises
   `DispatcherShutdown`, every task still open is finished as if `done(k)` had been called at that
@@ -111,6 +111,8 @@ counts from that trace.
 ### What is in it
 You can modify anything under `src/` and add features there. The rest (`dispatcher/`, `madsOpt.py`
 and `evaluation_scripts/`) is the same as what the leaderboard uses.
+The one exception is `dispatcher/student_name.json`, where you fill in your name (Step 2); on the
+leaderboard, the grader's own session id is used instead.
 
 ```
 starter_code/
@@ -121,7 +123,9 @@ starter_code/
 │   └── sandbox_server.py         the HTTP server inside every task container (run_all.py needs its GET /health)
 ├── dispatcher/                   course infrastructure
 │   ├── dispatcher.py             Dispatcher, the client your Agent calls: next_task, extract_patch / submit_patch, evaluate, continue_task, done, logger
-│   ├── egress_proxy.py           the HTTPS proxy: the agent container's only way out, to the course API
+│   ├── egress_proxy.py           the reverse proxy to the course API: the agent container's only way out
+│   ├── session.py                the run's session id, sent with every course API request
+│   ├── student_name.json         your first and last name, filled in once (see Step 2)
 │   └── agent.Dockerfile          the agent container image (python + openai, built offline)
 ├── madsOpt.py                    course infrastructure: builds the client and calls Agent(...).run()
 └── evaluation_scripts/
@@ -173,13 +177,20 @@ export CS2680_MODEL_STARTER=starter      # Starter tier
 python3 evaluation_scripts/run_all.py --limit 0
 ```
 
-`run_all.py` passes every `CS2680_*` variable into the agent container, and `madsOpt.py` adds
-`CS2680_BASE_URL`, the course API endpoint. Your agent reads them with `os.environ`. It may use any
+`run_all.py` passes every `CS2680_*` variable into the agent container, and sets `CS2680_BASE_URL` to
+the egress proxy, the agent's only way to the course API. Your agent reads them with `os.environ`;
+never hard-code the API URL. It may use any
 of the three models in one run, and as many of them as it likes.
 
 This command starts the agent container and the proxy, checks the network rules (course API
 reachable, everything else blocked), starts and health-checks every task container, and then stops
 without running your agent. Look for `EGRESS OK`, and for `preflight k: ... ok` for every task.
+
+The first time you run `run_all.py` in a terminal, it asks for your first and last name (in Latin
+letters) and saves them in `dispatcher/student_name.json`. Every course API request of a run then
+carries the session id `<First>_<Last>_<UTC start time>`, e.g. `Jane_Doe_20261006T172408Z`, which
+the egress proxy adds; the run prints it and keeps it in `run_logs/session_id`. If you run without a
+terminal (e.g. with `nohup`), fill in that file first, or the run exits before it starts anything.
 
 **Step 3. Run it.**
 
@@ -327,7 +338,7 @@ score = max(81 − r, 50)    if any of your submissions achieves the baseline
 score = 81 − r             otherwise
 ```
 
-The **baseline** solves 14 tasks in 4 hours within a limit of $10. If any of your submissions
+The **baseline** solves 16 tasks in 4 hours within a limit of $10. If any of your submissions
 achieves the baseline, you get credit for it, even if that submission is not your best.
 
 For example, rank 1 scores 80; rank 12 scores 69 whether or not it beats the baseline; rank 40
