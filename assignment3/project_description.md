@@ -142,6 +142,8 @@ starter_code/
 
 **Step 0. Prerequisites.** Linux x86_64; Docker; `git`;
 `python3` (3.10+) with `pip`; about 15 GB of free disk for the images.
+If you find difficulties on your local machine, you can use a [CloudLab](https://cs2680.com/computing/cloudlab)
+machine or an [AWS](https://cs2680.com/computing/aws) machine.
 
 ```bash
 # only if Docker is not installed:
@@ -339,7 +341,10 @@ score = 81 − r             otherwise
 ```
 
 The **baseline** solves 16 tasks in 4 hours within a limit of $10. If any of your submissions
-achieves the baseline, you get credit for it, even if that submission is not your best.
-
-For example, rank 1 scores 80; rank 12 scores 69 whether or not it beats the baseline; rank 40
+achieves the baseline, you get credit for it, even if that submission is not your best. For example, rank 1 scores 80; rank 12 scores 69 whether or not it beats the baseline; rank 40
 scores 50 if it beats the baseline and 41 if it does not.
+
+#### Bonus
+
+If you find a security vulnerability and report it, you can earn up to 3 bonus points toward your
+final course score (not just this assignment). Abusing a vulnerability forfeits your submission.
