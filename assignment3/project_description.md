@@ -122,7 +122,7 @@ bash assignment3/starter_code/init.sh
 ```
 
 This copies `package_claude_sessions.py` to the repository root and creates `CLAUDE.local.md`
-there with a workflow for all work in the repository. Claude Code commits your changes together with the repository's session logs in `claude-sessions.tar.gz` at the repository root.
+there with a workflow for all work in the repository. Claude Code commits your changes together with the repository's session logs in `claude-sessions.tar.gz` at the repository root. That archive includes Claude Code, Cursor, and Codex sessions for the repository.
 
 ### What is in it
 
@@ -137,7 +137,7 @@ course-repository/
 ```
 
 The shared workflow runs `python3 package_claude_sessions.py --path . --output claude-sessions.tar.gz`
-from the repository root to include sessions from every assignment and other repository work.
+from the repository root to include Claude Code, Cursor, and Codex sessions from every assignment and other repository work.
 For the Assignment 3 submission, run `python3 package_claude_sessions.py` from the repository
 root to create `assignment3/a3-sessions.tar.gz`. The remaining instructions use paths relative
 to `assignment3/starter_code/`.
@@ -353,7 +353,7 @@ as `assignment3/writeup.pdf`. Your repository's `assignment3/` should then conta
 ```
 assignment3/
 ├── starter_code/         your agent code and local run outputs
-├── a3-sessions.tar.gz    your Claude Code session files
+├── a3-sessions.tar.gz    your Claude Code, Cursor, and Codex session files
 └── writeup.pdf           the write-up
 ```
 
