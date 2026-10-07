@@ -52,14 +52,19 @@ infrastructure, then serves the agent's requests one at a time and enforces the 
 
 Verdicts live in this process's memory (Task.last) and in $A3_HOSTLOG, never in files the agent
 container can reach; the repo-root copies (model_patch_<k>.diff, pro_eval/eval_results.json,
-run_all_results.md) are written after the agent container is gone. Never handed to the agent:
+run_all_results.md) are written after the agent container is gone. So are the gradings' own
+outputs (test names, test logs, expected values): evaluate_one.sh writes them to
+$A3_HOSTLOG/.../pro_eval/<key>/ while the run lasts, and they are moved to pro_eval/<key>/ once the
+agent container is gone, also when the run is stopped (move_gradings). Never handed to the agent:
 instance_id, repo, base_commit, docker_image, sandbox_image.
 
 Infrastructure: egress proxy a3proxy_<run> (the only container with internet; a reverse proxy that
 forwards /v1/... to A3_API_UPSTREAM itself, no tunnels), agent container a3agent_<run> on two
 --internal networks with CS2680_BASE_URL=http://a3proxy_<run>:3128/v1 (its only way to the API),
 sandbox a3sbx_<run>_<k> per live task on the private network only, running src/sandbox_server.py
-with a bind-mounted portable CPython. Gradings (evaluate_one.sh) run with no network.
+with a bind-mounted portable CPython. Both networks are created with no address of this host on
+them (create_internal_network), so their containers cannot reach the host's own services either.
+Gradings (evaluate_one.sh) run with no network.
 
 Boundary with the agent container: it mounts this folder READ-ONLY at /madsOpt; only .tasks/ and
 madsOpt_logs/ are writable mounts. The host never runs a file from that folder during or after the
@@ -110,6 +115,7 @@ NET, EGRESS, AGENT, PROXY = f"a3sbx_{RUN}", f"a3egress_{RUN}", f"a3agent_{RUN}",
 API_BASE_URL = f"http://{PROXY}:{PROXY_PORT}/v1"   # the agent's CS2680_BASE_URL
 HOSTLOG = os.path.join(os.environ.get("A3_HOSTLOG", os.path.join(CACHE, "hostlogs")), f"{os.path.basename(ROOT)}_{RUN}")
 SCRIPTS = f"{HOSTLOG}/evaluation_scripts"   # host-only copies of the course scripts the host runs (snapshot_scripts)
+GRADINGS = f"{HOSTLOG}/pro_eval"            # each task's latest grading while the run lasts (move_gradings)
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -295,6 +301,30 @@ def drop_links():
                     pass
 
 
+def move_gradings():
+    """After the agent container is gone, also when the run was stopped: each task's latest grading
+    (evaluate_one.sh's output: test names, test logs, expected values) from GRADINGS, which the
+    agent container never mounts, to pro_eval/<key>/ in this folder."""
+    if not os.path.isdir(GRADINGS):
+        return
+    os.makedirs("pro_eval", exist_ok=True)
+    for key in sorted(os.listdir(GRADINGS)):
+        src, dst = os.path.join(GRADINGS, key), os.path.join("pro_eval", key)
+        try:
+            if os.path.islink(src) or not os.path.isdir(src):
+                continue
+            if os.path.lexists(dst):
+                log(f"pro_eval/{key} already exists; that task's grading stays in {src}")
+                continue
+            shutil.move(src, dst)
+        except OSError as e:
+            log(f"grading of task {key} not moved to pro_eval/ ({e}); it stays in {src}")
+    try:
+        os.rmdir(GRADINGS)
+    except OSError:
+        pass
+
+
 def snapshot_scripts():
     """Copy the course scripts the host runs (evaluate_one.sh during the run, make_predictions.py
     after it) and the task list they read to the host-only $A3_HOSTLOG before the agent starts;
@@ -394,9 +424,20 @@ def ensure_images(tasks):
             sh("docker", "build", "-q", "-f", "dispatcher/agent.Dockerfile", "-t", AGENT_IMAGE, ASSETS)
 
 
+def create_internal_network(name: str):
+    """An --internal network with no address of this host on it (gateway mode "isolated", Docker 28+):
+    its containers reach each other, but not this host's own services (sshd, rpcbind, ...) through a
+    gateway address. The host itself only ever reaches them with `docker exec`."""
+    if sh("docker", "network", "create", "--internal", "-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+          name, check=False).returncode != 0:
+        log(f"warning: this Docker cannot isolate {name} from the host (needs Docker 28+); "
+            f"its containers can reach this host's own services")
+        sh("docker", "network", "create", "--internal", name)
+
+
 def start_infra():
-    sh("docker", "network", "create", "--internal", NET)
-    sh("docker", "network", "create", "--internal", EGRESS)
+    create_internal_network(NET)
+    create_internal_network(EGRESS)
     log(f"agent {AGENT} ({AGENT_IMAGE}); networks {NET}, {EGRESS}; API {API_BASE_URL} -> {API_UPSTREAM}; "
         f"max live {MAX_LIVE}, max grading {MAX_GRADING}, eval timeout {EVAL_TIMEOUT}s")
     sh("docker", "run", "-d", "--name", PROXY, "--network", "bridge", "-v", f"{ROOT}/dispatcher:/dispatcher:ro",
@@ -502,7 +543,7 @@ def start_grading(t: Task, n_done: Optional[int] = None):
         if src is not None:
             with src:
                 shutil.copyfileobj(src, out)
-    outdir = f"{ROOT}/pro_eval/{t.key}"
+    outdir = f"{GRADINGS}/{t.key}"     # not under ROOT: the agent container mounts it, and reads it live
     env = dict(os.environ, A3_EVAL_TIMEOUT=str(EVAL_TIMEOUT), SWEBENCH_PRO_OS=PRO_OS)   # the copy cannot find it relative to itself
     t.grading = subprocess.Popen(["bash", f"{SCRIPTS}/evaluate_one.sh", t.key, snap, outdir],
                                  stdout=subprocess.PIPE, stderr=open("run_logs/sequence.log", "a"), text=True, env=env)
@@ -516,7 +557,7 @@ def finish_grading(t: Task):
     """Called when t.grading has exited: record the verdict and publish it to the agent."""
     out = (t.grading.stdout.read() or "").strip()
     res = 1 if out.endswith("1") else 0
-    vs = f"pro_eval/{t.key}/verifier_stdout.txt"
+    vs = f"{GRADINGS}/{t.key}/verifier_stdout.txt"
     text = open(vs, errors="replace").read() if os.path.exists(vs) else ""
     T = re.findall(r"Required tests: (\d+)", text); M = re.findall(r"Required tests that passed: (\d+)", text)
     if T:
@@ -530,7 +571,7 @@ def finish_grading(t: Task):
     secs = int(time.time() - t.grading_t0)
     with open(f"{HOSTLOG}/evaluations.tsv", "a") as f:
         f.write(f"{t.k}\t{t.iid}\t{t.grading_attempt}\t{res}\t{failed}\t{total}\t{secs}\n")
-    timed_out = os.path.exists(f"pro_eval/{t.key}/TIMEOUT")
+    timed_out = os.path.exists(f"{GRADINGS}/{t.key}/TIMEOUT")
     log(f"task {t.k} attempt {t.grading_attempt}: {failed}/{total} tests failing, "
         f"{'RESOLVED' if res else 'unresolved'} ({secs}s{', TIMEOUT' if timed_out else ''})")
     seq_json(f"evalres_{t.k}_{t.grading_attempt}.json",
@@ -822,6 +863,7 @@ def main() -> int:
         for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(s, signal.SIG_IGN)
         cleanup()
+        move_gradings()     # only now: the agent container, which mounts this folder, is gone
     if interrupted:
         log("stopped: containers and networks removed; no results written")
         return 130
