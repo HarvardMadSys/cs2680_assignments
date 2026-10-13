@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+madsOpt_logs/
+model_patch_*.diff
+predictions.json
+pro_eval/
+task.json
+.tasks/
+run_logs/
+.mining_generated
+run_all_results.md
+SWE-bench_Pro-os/
