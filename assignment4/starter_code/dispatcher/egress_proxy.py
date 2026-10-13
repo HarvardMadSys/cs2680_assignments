@@ -25,6 +25,12 @@ Behaviour:
   forwarded request carries the run's session id: an X-Session-Id header and a
   "cs2680-session/<id>" token at the end of the User-Agent. Whatever the agent
   sent for either (an X-Session-Id, a cs2680-session token) is replaced.
+- When the agent hangs up before its reply is complete (its request timed out,
+  or it was stopped), the proxy closes its connection to the upstream at once,
+  so that the server sees the client leave and drops the request instead of
+  computing a reply nobody will read (SGLang aborts a request whose client has
+  disconnected). A watcher thread per request checks the agent's connection
+  every WATCH_S seconds.
 - One log line per request: method, path, status, bytes, seconds. Headers and
   bodies (the API key, prompts, replies) pass through but are never logged.
 Stdlib only, one thread per client connection.
@@ -34,8 +40,11 @@ import argparse
 import http.client
 import http.server
 import re
+import select
+import socket
 import ssl
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -47,6 +56,7 @@ MAX_BODY = 64 << 20    # bytes of one request body
 CONNECT_TIMEOUT_S = 30
 READ_TIMEOUT_S = 900   # upstream silence (no byte) for this long ends the request
 IDLE_TIMEOUT_S = 600   # an idle keep-alive connection from the agent is closed
+WATCH_S = 1.0          # how often a forwarded request checks that the agent is still connected
 HOP = {"connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate",
        "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "expect"}
 SSL_CTX = ssl.create_default_context()
@@ -110,6 +120,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("too large")
         return self.rfile.read(n)
 
+    def _watch(self, conn, done, gone):
+        """Until `done` is set: when the agent's connection reaches EOF (the agent hung up), set `gone` and shut the
+        upstream socket down, which ends the blocked upstream read in _forward and closes the connection the server
+        sees. Bytes the agent sends meanwhile (a next request on the same connection) are left unread."""
+        while not done.wait(WATCH_S):
+            try:
+                readable, _, _ = select.select([self.connection], [], [], 0)
+                if not readable:
+                    continue
+                if self.connection.recv(1, socket.MSG_PEEK) != b"":
+                    continue                    # data, not EOF: the agent is still there
+            except OSError:
+                pass                            # a reset connection is a gone agent too
+            if done.is_set():
+                return
+            gone.set()
+            try:
+                socket.socket.shutdown(conn.sock, socket.SHUT_RDWR)
+            except (OSError, AttributeError, TypeError):
+                pass
+            return
+
     def _forward(self):
         peer, t0 = self.client_address[0], time.time()
         self._sent = 0
@@ -126,10 +158,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conn = http.client.HTTPSConnection(host, port, timeout=CONNECT_TIMEOUT_S, context=SSL_CTX)
         else:
             conn = http.client.HTTPConnection(host, port, timeout=CONNECT_TIMEOUT_S)
+        done, gone = threading.Event(), threading.Event()
         try:
             try:
                 conn.connect()
                 conn.sock.settimeout(READ_TIMEOUT_S)
+                threading.Thread(target=self._watch, args=(conn, done, gone), daemon=True).start()
                 drop = HOP | {t.strip().lower() for t in self.headers.get("Connection", "").split(",")}
                 if SESSION:
                     drop |= {"x-session-id", "user-agent"}
@@ -147,14 +181,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 conn.endheaders(body)
                 resp = conn.getresponse()
             except (OSError, http.client.HTTPException) as e:
+                if gone.is_set():
+                    self.close_connection = True
+                    _log(f"{peer} {self.command} {shown} agent gone after {time.time() - t0:.1f} s: upstream request dropped")
+                    return
                 _log(f"{peer} {self.command} {shown} upstream failed: {type(e).__name__}: {e}")
                 return self._reply(502, f"Bad Gateway: {type(e).__name__}")
             self._relay(resp)
             _log(f"{peer} {self.command} {shown} -> {resp.status} {self._sent} B {time.time() - t0:.1f} s")
         except (OSError, http.client.HTTPException) as e:   # mid-response: the agent or the upstream went away
             self.close_connection = True
-            _log(f"{peer} {self.command} {shown} broken after {self._sent} B: {type(e).__name__}")
+            if gone.is_set():
+                _log(f"{peer} {self.command} {shown} agent gone after {self._sent} B, {time.time() - t0:.1f} s: upstream request dropped")
+            else:
+                _log(f"{peer} {self.command} {shown} broken after {self._sent} B: {type(e).__name__}")
         finally:
+            done.set()
             conn.close()
 
     def _relay(self, resp):
