@@ -3,7 +3,7 @@
 This is the Assignment 3 framework with three changes for Assignment 4. The assignment itself is on the course website.
 
 - **Tasks.** `evaluation_scripts/agent_task_input.json` and `task_test.json` hold 25 SWE-bench Pro tasks, different from Assignment 3's and from the leaderboard's.
-- **Up to 25 tasks live at once.** The dispatcher lets your agent keep all 25 tasks open (Assignment 3 allowed 5). How many it actually keeps open is up to your agent, so a lower limit belongs in your `src/`, not in the harness's settings.
+- **Up to 25 tasks live at once.** The dispatcher lets your agent keep all 25 tasks open (Assignment 3 allowed 5). Do not change the harness's settings: the leaderboard runs the harness as it is shipped.
 - **Your server instead of the course API.** The egress proxy forwards your agent's model calls to `A3_API_UPSTREAM`, your server, and to nothing else. There is no default.
 
 ## Prerequisites
