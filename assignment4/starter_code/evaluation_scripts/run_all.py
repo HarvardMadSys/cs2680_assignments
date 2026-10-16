@@ -16,18 +16,23 @@
 
   --limit N       only the first N tasks can be opened (0 = preflight: start the agent, start
                   and health-check every task's sandbox, check egress, stop)
-  A3_MAX_LIVE     tasks (sandboxes) live at once, default 25 (all of them)
+  A3_MAX_LIVE     tasks (sandboxes) live at once, default 0: no limit (every task may be live)
   A3_MAX_GRADING  verifier containers running at once, default 3
   A3_EVAL_TIMEOUT seconds per grading, default 2100 (a hung test suite = all its tests failing)
-  A3_RUN_LIMIT_S  seconds for the whole run, counted from the moment the first task is opened,
+  A3_RUN_LIMIT_S  seconds for the whole run, counted from its start (A3_CLOCK_FROM),
                   default 14400 (4 h); 0 = no limit (see "time limit" below)
+  A3_CLOCK_FROM   start (default) or first_task: the whole-run clock starts when the run starts (just
+                  before the agent container), as on the leaderboard, or, as in Assignment 3, when the
+                  first task is opened
   A3_DOCKER       docker command; default: `docker` if it works, else `sudo -n -E docker` (asks
                   for the sudo password once at the start and keeps sudo alive during the run)
   A3_CACHE        host-only cache dir, default <dir holding this harness>/.cache/cs2680_a3 — OUTSIDE
                   the harness, so the agent container (which mounts the harness) never sees it:
   A3_ASSETS         portable_python/, portable_python_musl/, wheels/, images/ (prepare_images.sh),
                     default $A3_CACHE/assets
-  A3_HOSTLOG        host-only records (verdicts, task entries, patch snapshots), default $A3_CACHE/hostlogs
+  A3_HOSTLOG        host-only records (verdicts, task entries, patch snapshots), default $A3_CACHE/hostlogs;
+                    clock_start (epoch: when the whole-run clock started) and agent_over (`<epoch> <why>`, why
+                    end | limit | agent_died: when the agent's request loop ended) are written there for the grader
   SWEBENCH_PRO_OS   scaleapi/SWE-bench_Pro-os checkout (tests + solutions; prepare_images.sh fetches it),
                     default $A3_CACHE/SWE-bench_Pro-os
 
@@ -46,7 +51,8 @@ infrastructure, then serves the agent's requests one at a time and enforces the 
   done k      final = last evaluation (an unevaluated submitted patch is graded first; no patch
               = failed); the answer is deferred until that grading ends; then the sandbox and
               the patch folder are removed
-  time limit  A3_RUN_LIMIT_S after the first task was opened the run is stopped: `shutdown` is
+  time limit  A3_RUN_LIMIT_S after the run started (A3_CLOCK_FROM=first_task: after the first
+              task was opened) the run is stopped: `shutdown` is
               published (the agent's next dispatcher call raises DispatcherShutdown), every task
               still open is finalized as if done(k) had been called, tasks never opened count as
               failed; gradings already running still finish (grading is not the agent's time)
@@ -106,10 +112,14 @@ AGENT_IMAGE = os.environ.get("A3_AGENT_IMAGE", "cs2680-a3-agent")
 SBX_CPUS = os.environ.get("A3_SBX_CPUS", "1"); SBX_MEM = os.environ.get("A3_SBX_MEM", "4g")
 SBX_PORT = 8000; PROXY_PORT = 3128
 API_UPSTREAM = os.environ.get("A3_API_UPSTREAM", "")
-MAX_LIVE = int(os.environ.get("A3_MAX_LIVE", "25"))
+MAX_LIVE = int(os.environ.get("A3_MAX_LIVE", "0"))    # 0: no limit
 MAX_GRADING = int(os.environ.get("A3_MAX_GRADING", "3"))
 EVAL_TIMEOUT = int(os.environ.get("A3_EVAL_TIMEOUT", "2100"))
-RUN_LIMIT_S = int(os.environ.get("A3_RUN_LIMIT_S", str(4 * 3600)))   # whole run, from the first task opened
+RUN_LIMIT_S = int(os.environ.get("A3_RUN_LIMIT_S", str(4 * 3600)))   # the whole run, from CLOCK_FROM
+CLOCK_FROM = os.environ.get("A3_CLOCK_FROM", "start")               # from the run's start (or first_task)
+if CLOCK_FROM not in ("first_task", "start"):
+    sys.exit(f"error: A3_CLOCK_FROM must be first_task or start, not {CLOCK_FROM!r}")
+T0 = None                                                           # when the run started (main, before the agent)
 
 RUN = f"{int(time.time())}_{os.getpid()}"
 NET, EGRESS, AGENT, PROXY = f"a3sbx_{RUN}", f"a3egress_{RUN}", f"a3agent_{RUN}", f"a3proxy_{RUN}"
@@ -448,7 +458,7 @@ def start_infra():
     create_internal_network(NET)
     create_internal_network(EGRESS)
     log(f"agent {AGENT} ({AGENT_IMAGE}); networks {NET}, {EGRESS}; API {API_BASE_URL} -> {API_UPSTREAM}; "
-        f"max live {MAX_LIVE}, max grading {MAX_GRADING}, eval timeout {EVAL_TIMEOUT}s")
+        f"max live {MAX_LIVE or 'all'}, max grading {MAX_GRADING}, eval timeout {EVAL_TIMEOUT}s")
     sh("docker", "run", "-d", "--name", PROXY, "--network", "bridge", "-v", f"{ROOT}/dispatcher:/dispatcher:ro",
        AGENT_IMAGE, "python3", "-B", "/dispatcher/egress_proxy.py", "--port", str(PROXY_PORT), "--upstream", API_UPSTREAM,
        "--session", SESSION)
@@ -595,9 +605,14 @@ class Server:
         self.tasks = tasks; self.n_available = n_available
         self.next_k = 0; self.n = 0
         self.grade_queue = []          # tasks waiting for a grading slot
-        self.t_first = None            # when the first task was opened: the whole-run clock starts here
+        self.t_first = None            # when the whole-run clock started: the run's start, or the first task opened
         self.limit_note = ""           # set when A3_RUN_LIMIT_S stopped the run (goes into run_all_results.md)
         open(f"{HOSTLOG}/evaluations.tsv", "w").close()
+        if CLOCK_FROM == "start":      # the clock started with the run, whether or not a task is opened
+            self.t_first = T0
+            if RUN_LIMIT_S > 0:
+                log(f"time limit: the whole run must end within {RUN_LIMIT_S / 3600:g} h of its start, by "
+                    f"{time.strftime('%H:%M:%S UTC', time.gmtime(self.t_first + RUN_LIMIT_S))}")
 
     # -- state helpers
     def live(self): return [t for t in self.tasks if t.live]
@@ -622,14 +637,14 @@ class Server:
 
     # -- the whole-run time limit
     def over_time(self) -> bool:
-        """True once A3_RUN_LIMIT_S has passed since the first task was opened; then publishes
+        """True once A3_RUN_LIMIT_S has passed since the clock started (t_first); then publishes
         `shutdown` so the agent stops (its next dispatcher call raises DispatcherShutdown)."""
         if RUN_LIMIT_S <= 0 or self.t_first is None or time.time() - self.t_first < RUN_LIMIT_S:
             return False
         open_now = [t.k for t in self.live()]
         unopened = [t.k for t in self.tasks[:self.n_available] if t.t_start == 0.0]
-        self.limit_note = (f"Time limit reached: the run was stopped {RUN_LIMIT_S / 3600:g} h after the first task "
-                           f"was opened. Tasks still open ({', '.join(map(str, open_now)) or 'none'}) were finalized as "
+        since = "it started" if CLOCK_FROM == "start" else "the first task was opened"
+        self.limit_note = (f"Time limit reached: the run was stopped {RUN_LIMIT_S / 3600:g} h after {since}. Tasks still open ({', '.join(map(str, open_now)) or 'none'}) were finalized as "
                            f"if done() had been called; tasks never opened ({', '.join(map(str, unopened)) or 'none'}) "
                            f"count as failed.")
         log(self.limit_note)
@@ -653,7 +668,7 @@ class Server:
         op = req.get("op"); k = req.get("k")
         t = self.tasks[int(k)] if isinstance(k, int) and 0 <= int(k) < len(self.tasks) else None
         if op == "next_task":
-            if len(self.live()) >= MAX_LIVE:
+            if MAX_LIVE and len(self.live()) >= MAX_LIVE:
                 return self.respond(n, {"ok": False, "error": f"too many live tasks ({len(self.live())}): call done(k) on one first"})
             if self.next_k >= self.n_available:
                 return self.respond(n, {"ok": True, "task": None})
@@ -706,15 +721,15 @@ class Server:
         return self.respond(n, {"ok": False, "error": f"unknown op '{op}'"})
 
     def serve(self):
-        log(f"{self.n_available} task(s) available, at most {MAX_LIVE} live at once; waiting for the agent's requests")
+        log(f"{self.n_available} task(s) available, at most {MAX_LIVE or 'all'} live at once; waiting for the agent's requests")
         while True:
             self.pump_gradings()
             if self.over_time():
-                break
+                why = "limit"; break
             if exists_at(SEQ_FD, "end"):
-                break
+                why = "end"; break
             if not running(AGENT):
-                log("agent container died"); break
+                log("agent container died"); why = "agent_died"; break
             f = open_plain(SEQ_FD, f"req_{self.n}.json")
             if f is None:
                 time.sleep(0.5); continue
@@ -726,6 +741,10 @@ class Server:
                 log(f"request {self.n} failed: {type(e).__name__}: {e}")
                 self.respond(self.n, {"ok": False, "error": f"dispatcher error: {type(e).__name__}: {e}"})
             self.n += 1
+        # the agent is over: the grader can stop the model server now (gradings need no model)
+        with open(f"{HOSTLOG}/agent_over.tmp", "w") as f:
+            f.write(f"{time.time()} {why}\n")
+        os.replace(f"{HOSTLOG}/agent_over.tmp", f"{HOSTLOG}/agent_over")
         # wind down: let pending gradings finish, finalize what the agent left open
         while any(t.grading is not None for t in self.tasks) or self.grade_queue:
             self.pump_gradings(); time.sleep(1)
@@ -832,7 +851,7 @@ def session_id() -> str:
 
 
 def main() -> int:
-    global SESSION
+    global SESSION, T0
     args = parse_args()
     SESSION = session_id()                         # first: without a name, nothing is started
     preconditions()
@@ -858,6 +877,10 @@ def main() -> int:
     interrupted = False
     server = None
     try:
+        T0 = time.time()                           # the run starts: the agent container is next
+        with open(f"{HOSTLOG}/clock_start.tmp", "w") as f:
+            f.write(f"{T0}\n")
+        os.replace(f"{HOSTLOG}/clock_start.tmp", f"{HOSTLOG}/clock_start")
         start_infra()
         if args.limit == 0:
             rc = preflight(tasks)

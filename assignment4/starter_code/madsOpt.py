@@ -35,9 +35,9 @@ dispatcher/dispatcher.py: `from dispatcher import Dispatcher, DispatcherError`):
                                          patch folder are removed.
     dispatcher.logger(k)                 the TraceLogger for task k (madsOpt_logs/<k>/run.jsonl):
                                          log api_request / tool_call / tool_result to it
-Rules enforced by the dispatcher (run_all.py, host side): at most MAX_LIVE (25) tasks live at
-once; evaluation runs on pristine containers; results are keyed by task index; the whole run
-must end within A3_RUN_LIMIT_S (4 h) of the first task being opened, after which the dispatcher
+Rules enforced by the dispatcher (run_all.py, host side): every task may be live at once
+(MAX_LIVE: how many there are); evaluation runs on pristine containers; results are keyed by task
+index; the whole run must end within A3_RUN_LIMIT_S (4 h) of its start, after which the dispatcher
 shuts the run down (DispatcherShutdown), finalizes open tasks as by done(k) and counts tasks
 never opened as failed.
 
