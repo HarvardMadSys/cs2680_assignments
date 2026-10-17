@@ -2,7 +2,7 @@
 # Grade ONE patch with the SWE-bench Pro V2 verifier (same protocol as
 # evaluate.sh, for a single instance): apply the patch to a PRISTINE
 # ghcr.io/scaleapi/swe-bench_pro-v2:<instance_id> container, run the task's
-# tests/test.sh with the tests dir mounted at /tests, read reward.txt. The container has
+# tests/test.sh with the tests dir mounted at /tests. The container has
 # no network (--network none): code from the patch runs next to the hidden tests.
 #
 #   bash evaluation_scripts/evaluate_one.sh <task_key> <patch_file> [out_dir]
@@ -14,6 +14,14 @@
 # setup error (unknown instance, no verifier). An empty patch is "0" without
 # starting a container. A3_EVAL_TIMEOUT (default 3300 s) bounds the verifier; on timeout the
 # container is removed, reward is 0 and $OUT/TIMEOUT is created.
+#
+# The verdict is decided HERE, on the host (verdict.py), never inside the container: the patch's
+# code runs there as root and could change anything in it (its reward.txt, the commands test.sh
+# runs, the files it writes). The container writes only into $OUT/container (its /logs/verifier),
+# never sees the lists of required tests (config.json without them), and runs nothing after
+# test.sh. Everything else in $OUT is the host's: the patch it got (replay/, read-only), its output
+# as the docker client received it (verifier_stdout.txt), and verdict.py's files (reward.txt,
+# output.json, verdict.json, the raw test logs copied as plain files, ...). See verdict.py.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,22 +33,28 @@ read -r IID IMAGE < <(python3 -c "import json,sys; t=json.load(open(sys.argv[1])
 CACHE="${A3_CACHE:-$(dirname "$ROOT")/.cache/cs2680_a3}"   # same default as run_all.py / prepare_images.sh
 TDIR="${SWEBENCH_PRO_OS:-$CACHE/SWE-bench_Pro-os}/v2/tasks/$IID/tests"
 [[ -f "$TDIR/test.sh" ]] || { echo "evaluate_one: no V2 verifier at $TDIR" >&2; exit 2; }
+VERDICT=(python3 -I -S "$SCRIPT_DIR/verdict.py")
 
-rm -rf "$OUT" && mkdir -p "$OUT/replay"
+rm -rf "$OUT" && mkdir -p "$OUT/replay" "$OUT/container"
 if [[ ! -s "$PATCH" ]] || ! grep -q '[^[:space:]]' "$PATCH"; then
-  echo 0 > "$OUT/reward.txt"; echo "no patch" > "$OUT/verifier_stdout.txt"; echo 0; exit 0
+  echo "no patch" > "$OUT/verifier_stdout.txt"
+  "${VERDICT[@]}" decide --tests "$TDIR" --out "$OUT" --patch "$PATCH" --no-patch >/dev/null
+  echo 0; exit 0
 fi
 cp "$PATCH" "$OUT/replay/model.patch"
+"${VERDICT[@]}" sanitize "$TDIR/config.json" "$OUT/config_for_container.json"
 
-# Same apply ladder as evaluate.sh / v2 patch_replay; test.sh's own exit code
-# is ignored, reward.txt is the verdict.
+# Same apply ladder as evaluate.sh / v2 patch_replay. What the apply did is printed between markers
+# BEFORE test.sh starts, so the patch's code cannot take it back; then test.sh is the container's
+# last command (exec): its exit code, reward.txt and RESULT lines are ignored (verdict.py decides).
 INNER='cd /app 2>/dev/null || cd /testbed
 { git apply --verbose /replay/model.patch || git apply --3way /replay/model.patch \
-  || patch --fuzz=3 -p1 -i /replay/model.patch; } > /logs/verifier/apply.log 2>&1
-echo "apply_rc=$?" >> /logs/verifier/apply.log
-git status --short > /logs/verifier/post_apply_status.txt 2>&1 || true
-bash /tests/test.sh
-chown -R '"$(id -u):$(id -g)"' /logs/verifier 2>/dev/null || true'
+  || patch --fuzz=3 -p1 -i /replay/model.patch; } > /tmp/a3_apply.log 2>&1
+echo "apply_rc=$?" >> /tmp/a3_apply.log
+git status --short > /tmp/a3_status.txt 2>&1 || true
+echo "@@a3-apply-log-begin@@"; cat /tmp/a3_apply.log; echo "@@a3-apply-log-end@@"
+echo "@@a3-status-begin@@"; cat /tmp/a3_status.txt; echo "@@a3-status-end@@"
+exec bash /tests/test.sh'
 # On timeout: `timeout` TERMs the docker client, which only forwards the signal into the
 # container and keeps waiting (the container's shell defers it until the test process ends),
 # so `-k 5` KILLs the client 5 s later and the container is then removed by name.
@@ -48,10 +62,22 @@ read -r -a DOCKER <<< "${A3_DOCKER:-docker}"   # run_all.py sets it (e.g. "sudo 
 CNAME="a3grade_$$_$(date +%s%N)"
 rc=0
 timeout -k 5 "${A3_EVAL_TIMEOUT:-3300}" "${DOCKER[@]}" run --rm --name "$CNAME" --network none --entrypoint bash \
-  -v "$TDIR:/tests:ro" -v "$OUT/replay:/replay:ro" -v "$OUT:/logs/verifier" \
+  -v "$TDIR:/tests:ro" -v "$OUT/config_for_container.json:/tests/config.json:ro" -v "$OUT/replay:/replay:ro" \
+  -v "$OUT/container:/logs/verifier" \
   "$IMAGE" -c "$INNER" > "$OUT/verifier_stdout.txt" 2>&1 || rc=$?
+TIMED_OUT=()
 if [[ $rc == 124 || $rc == 137 ]]; then
   "${DOCKER[@]}" rm -f "$CNAME" >/dev/null 2>&1 || true
   echo "TIMEOUT after ${A3_EVAL_TIMEOUT:-3300}s" > "$OUT/TIMEOUT"; echo "verifier timed out" >> "$OUT/verifier_stdout.txt"
+  TIMED_OUT=(--timed-out)
 fi
-if [[ "$(cat "$OUT/reward.txt" 2>/dev/null | tr -d '[:space:]')" == 1 ]]; then echo 1; else echo 0; fi
+# What the container left, made the host user's by a fresh container of the same image (which
+# never saw the patch): anything but plain files and folders (symlinks, devices, fifos) removed.
+"${DOCKER[@]}" run --rm --network none --entrypoint sh -v "$OUT/container:/x" "$IMAGE" \
+  -c 'find /x -mindepth 1 ! -type f ! -type d -delete 2>/dev/null; chown -R "$0" /x' "$(id -u):$(id -g)" >/dev/null 2>&1 || true
+if ! "${VERDICT[@]}" decide --tests "$TDIR" --out "$OUT" --patch "$OUT/replay/model.patch" --container "$OUT/container" \
+     "${TIMED_OUT[@]}" > "$OUT/.verdict_out" 2>> "$OUT/verdict_error.log"; then
+  echo 0 > "$OUT/reward.txt"; echo "verdict.py failed (verdict_error.log): reward 0" >> "$OUT/verifier_stdout.txt"
+fi
+rm -f "$OUT/.verdict_out"
+if [[ "$(tr -d '[:space:]' < "$OUT/reward.txt" 2>/dev/null)" == 1 ]]; then echo 1; else echo 0; fi

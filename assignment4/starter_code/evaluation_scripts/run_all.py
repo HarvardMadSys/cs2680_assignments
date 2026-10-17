@@ -43,7 +43,8 @@ infrastructure, then serves the agent's requests one at a time and enforces the 
               task=k, sandbox_url, workdir}; error when A3_MAX_LIVE are live; task=null at the end
   extract k   `git add -N . && git diff` of sandbox k -> .tasks/patches/<k>/patch.diff
   evaluate k  snapshot the submitted patch and grade it IN THE BACKGROUND on a pristine
-              container (evaluate_one.sh); answer {pending: true} at once; when the grading ends,
+              container (evaluate_one.sh; the verdict is decided on the host, verdict.py, never by
+              anything inside that container); answer {pending: true} at once; when the grading ends,
               publish .tasks/seq/evalres_<k>_<a>.json = {task, attempt, tests_failed, tests_total}
               (that task's OWN hidden tests; never names)
   continue k  delete the submitted patch, keep the sandbox, attempt += 1 (refused while a
@@ -337,11 +338,11 @@ def move_gradings():
 
 
 def snapshot_scripts():
-    """Copy the course scripts the host runs (evaluate_one.sh during the run, make_predictions.py
+    """Copy the course scripts the host runs (evaluate_one.sh and its verdict.py during the run, make_predictions.py
     after it) and the task list they read to the host-only $A3_HOSTLOG before the agent starts;
     they run from there, never from the folder the agent container mounts."""
     os.makedirs(SCRIPTS, exist_ok=True)
-    for f in ("evaluate_one.sh", "make_predictions.py", "agent_task_input.json"):
+    for f in ("evaluate_one.sh", "verdict.py", "make_predictions.py", "agent_task_input.json"):
         shutil.copy(f"evaluation_scripts/{f}", f"{SCRIPTS}/{f}")
 
 
@@ -576,12 +577,10 @@ def finish_grading(t: Task):
     """Called when t.grading has exited: record the verdict and publish it to the agent."""
     out = (t.grading.stdout.read() or "").strip()
     res = 1 if out.endswith("1") else 0
-    vs = f"{GRADINGS}/{t.key}/verifier_stdout.txt"
-    text = open(vs, errors="replace").read() if os.path.exists(vs) else ""
-    T = re.findall(r"Required tests: (\d+)", text); M = re.findall(r"Required tests that passed: (\d+)", text)
-    if T:
-        total, passed = int(T[-1]), int(M[-1]) if M else 0
-    else:                       # verifier never ran the tests (apply/build failed, empty patch, timeout)
+    try:                        # the host's verdict (verdict.py), never the grading container's own lines
+        v = json.load(open(f"{GRADINGS}/{t.key}/verdict.json"))
+        total, passed = int(v["required"]), int(v["passed_required"])
+    except (OSError, ValueError, KeyError, TypeError):   # evaluate_one.sh stopped before deciding
         total, passed = total_tests(t), 0
     if res == 1:
         passed = total
@@ -678,6 +677,8 @@ class Server:
             if not wd:
                 log(f"task {t.k}: sandbox failed to start; handed over without one")
             t.live = True; t.wd = wd or "/app"; t.t_start = time.time(); t.attempt = 0; t.evaluated = False
+            with open("run_logs/task_opened.tsv", "a") as f:   # host-only (the agent cannot write run_logs/):
+                f.write(f"{t.k}\t{t.iid}\t{t.t_start}\n")     # when each task was handed out (request_log.py)
             if self.t_first is None:
                 self.t_first = t.t_start
                 if RUN_LIMIT_S > 0:
